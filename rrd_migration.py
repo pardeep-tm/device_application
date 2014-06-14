@@ -10,10 +10,13 @@ import rrd_main
 
 def build_export(site,host,service):
     _folder = '/opt/omd/sites/%s/var/pnp4nagios/perfdata/%s/' % (site,host)
+    xml_file_list = []
     tmp_service =service
     service = service.replace(' ','_')
     params = []
+    perf_data =None
     m = 0
+    ds_index =None
     file_paths = []
     temp_dict = {}
     data_dict = {
@@ -21,69 +24,60 @@ def build_export(site,host,service):
         "service": service,
         "ds": {}
     }
-    perf_data_list = []
     threshold_values = {}
+    print "service -----%s\n" %(service)
     try:
-        if service == 'PING':
-        	tree = ET.parse(_folder + '_HOST_.xml')
-        	myfile = '_HOST_'
-        else:
-            for file in os.listdir(_folder):
-                if file.find(service):
-                    myfile = service  
-                tree = ET.parse(_folder + service +'.xml')
-    except IOError, e:
-	print e
-	return 0
-  
-
-    root = tree.getroot()
-    query = "GET services\nColumns: perf_data\nFilter: host_name = " +\
-        "%s\nFilter: service_description = %s\nAnd: 2\n" %(host,tmp_service)
-    query_output = rrd_main.get_from_socket(site, query)
-    print '-- check output --'
-    print query_output
-
-    if query_output:
-        threshold_values = get_threshold(query_output)
-
-    for ds in root.findall('DATASOURCE'):
-        params.append(ds.find('NAME').text)
-
-	for param in params:
-   		rrd_file = myfile +'_'+ '%s.rrd' % param
-    	file_path = _folder + rrd_file
-    	file_paths.append(file_path)
-    
-
-    for path in file_paths:
-        m = -1
+    	for perf_file in os.listdir(_folder):
+    		if perf_file.endswith(".xml"):
+			xml_file_list.append(perf_file)		
+	for xml_file in xml_file_list:
+		print _folder+xml_file
+		tree = ET.parse(_folder + xml_file)
+    		root = tree.getroot()
+        	perf_data = root.find("NAGIOS_PERFDATA").text.strip()
+		print perf_data
+		threshold_values = get_threshold(perf_data)
+    		for ds in root.findall('DATASOURCE'):
+        		params.append(ds.find('NAME').text)
+			file_paths.append(ds.find('RRDFILE').text)
+		print file_paths
+		for path in file_paths:
+        		m = -1
         
-        data_series = do_export(site, path,params[file_paths.index(path)])
-        print "-- data_series --"
-        print data_series
-        data_dict.update({
-            "check_time": data_series.get('check_time'),
-            "local_timestamp": data_series.get('local_timestamp'),
-            "site": data_series.get('site')
-        })
-        data_dict.get('ds')[params[file_paths.index(path)]] = [{"meta": [], "data": []}]
-        for d in data_series.get('data'):
-            m += 1
-            if d[-1]:
-                temp_dict = dict(
-                    time=data_series.get('check_time') + timedelta(minutes=m),
-                    value=d[-1]
-                )
-                data_dict.get('ds').get(params[file_paths.index(path)])[0].get('data').append(temp_dict)
-        data_dict.get('ds').get(params[file_paths.index(path)])[0].get('meta').append(threshold_values.get(params[file_paths.index(path)]))
-    print "-- data_dict --"
-    print data_dict
+        		data_series = do_export(site, path,params[file_paths.index(path)])
+        		print "-- data_series --"
+        		print data_series
+        		data_dict.update({
+            			"check_time": data_series.get('check_time'),
+            			"local_timestamp": data_series.get('local_timestamp'),
+            			"site": data_series.get('site')
+        		})
+			ds_index = params[file_paths.index(path)]
+        		data_dict.get('ds')[ds_index] = [{"meta": [], "data": []}]
+        		for d in data_series.get('data'):
+            			m += 1
+            			if d[-1]:
+                			temp_dict = dict(
+                    				time=data_series.get('check_time') + timedelta(minutes=m),
+                    				value=d[-1]
+                			)
+                			data_dict.get('ds').get(ds_index)[0].get('data').append(temp_dict)
+        		data_dict.get('ds').get(ds_index)[0].get('meta').append(threshold_values.get(ds_index))
+   		print "-- data_dict --"
+    		print data_dict
+		params = []
+		file_paths = []
+		data_dict = {
+        		"host": host,
+        		"service": service,
+        		"ds": {}
+    		}
 
-    status = insert_data(data_dict)
-    print status
-    print "\n"
-
+    		status = insert_data(data_dict)
+    		print status
+    		print "\n"	
+    except IOError, e:
+        raise IOError, e
 def do_export(site, file_name,data_source):
     data_series = {}
     cmd_output ={}
@@ -115,8 +109,7 @@ def do_export(site, file_name,data_source):
     try:
         cmd_output = demjson.decode(cmd_output)
     except demjson.JSONDecodeError, e:
-        print e
-        return data_series
+        raise demjson.JSONDecodeError, e
 
     print "-- cmd_output --"
     print cmd_output
@@ -183,7 +176,7 @@ def db_port(site_name=None):
         with open(port_conf_file, 'r') as portfile:
             port = portfile.readline().split('=')[1].strip()
     except IOError, e:
-        print e
+        raise IOError, e
 
     return port
 
@@ -216,10 +209,8 @@ def insert_data(data_dict):
     )
 
     if db:
-        print "-- db port --"
-        print int(port)
         db.device_perf.insert(data_dict)
-        return "Data Inserted into Mongodb"
+        return "Data Inserted into Mongodb " 
     else:
         return "Data couldn't be inserted into Mongodb"
 
