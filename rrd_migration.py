@@ -1,12 +1,14 @@
 import os
 import time
 import demjson
+import re
 from datetime import datetime, timedelta
 import copy
 from xml.etree import ElementTree as ET
 import subprocess
 import pymongo
 import rrd_main
+
 
 def build_export(site,host,service):
 	_folder = '/opt/omd/sites/%s/var/pnp4nagios/perfdata/%s/' % (site,host)
@@ -58,18 +60,22 @@ def build_export(site,host,service):
 				"site": data_series.get('site')
 				})
 			ds_index = params[file_paths.index(path)]
-				data_dict.get('ds')[ds_index] = [{"meta": [], "data": []}]
-				for d in data_series.get('data'):
-						m += 1
-						if d[-1]:
-							temp_dict = dict(
-									time=data_series.get('check_time') + timedelta(minutes=m),
-									value=d[-1]
-							)
-							data_dict.get('ds').get(ds_index)[0].get('data').append(temp_dict)
-				data_dict.get('ds').get(ds_index)[0].get('meta').append(threshold_values.get(ds_index))
+			data_dict.get('ds')[ds_index] = {"meta": {}, "data": []}
+			for d in data_series.get('data'):
+					m += 1
+					if d[-1]:
+						temp_dict = dict(
+								time=data_series.get('check_time') + timedelta(minutes=m),
+								value=d[-1]
+						)
+						data_dict.get('ds').get(ds_index).get('data').append(temp_dict)
+			data_dict.get('ds').get(ds_index)['meta'] = threshold_values.get(ds_index)
 		print "-- data_dict --"
 		print data_dict
+		status = insert_data(data_dict)
+		print status
+		print "\n"
+
 		params = []
 		file_paths = []
 		data_dict = {
@@ -78,150 +84,159 @@ def build_export(site,host,service):
 				"ds": {}
 		}
 
-		status = insert_data(data_dict)
-		print status
-		print "\n"	
+
 def do_export(site, file_name,data_source):
-	data_series = {}
-	cmd_output ={}
-	CF = 'AVERAGE'
-	resolution = '-300sec';
-	utc_time = datetime(1970, 1,1)
-	#Shifting the fetching time to -15mins, for the time being
-	end_time = datetime.now() - timedelta(minutes=15)
-	start_time = end_time - timedelta(minutes=5)
-	start_epoch = int((start_time - utc_time).total_seconds())
-	end_epoch = int((end_time - utc_time).total_seconds())
+    data_series = {}
+    cmd_output ={}
+    CF = 'AVERAGE'
+    resolution = '-300sec';
+    utc_time = datetime(1970, 1,1)
+    #Shifting the fetching time to -10mins, for the time being
+    end_time = datetime(2014, 6, 14, 14, 20)
+    start_time = end_time - timedelta(minutes=5)
+    #end_time = datetime.now() - timedelta(minutes=10)
+    #start_time = end_time - timedelta(minutes=5)
+    start_epoch = int((start_time - utc_time).total_seconds())
+    end_epoch = int((end_time - utc_time).total_seconds())
 
-	#Subtracting 5:30 Hrs to epoch times, to get IST
-	start_epoch -= 19800
-	end_epoch -= 19800
+    #Subtracting 5:30 Hrs to epoch times, to get IST
+    start_epoch -= 19800
+    end_epoch -= 19800
 
-	cmd = '/omd/sites/%s/bin/rrdtool xport --json -s %s -e %s '\
-		%(site, str(start_epoch), str(end_epoch))
-	RRAs = ['MIN','MAX','AVERAGE']
+    cmd = '/omd/sites/%s/bin/rrdtool xport --json -s %s -e %s '\
+        %(site, str(start_epoch), str(end_epoch))
+    RRAs = ['MIN','MAX','AVERAGE']
 
-	for RRA in RRAs:
-		cmd += 'DEF:%s_%s=%s:%d:%s XPORT:%s_%s:%s_%s '\
-			%(data_source, RRA, file_name, 1, RRA, data_source,
-				RRA, data_source, RRA)
+    for RRA in RRAs:
+    	cmd += 'DEF:%s_%s=%s:%d:%s XPORT:%s_%s:%s_%s '\
+            %(data_source, RRA, file_name, 1, RRA, data_source,
+                RRA, data_source, RRA)
 
-	p=subprocess.Popen(cmd,stdout=subprocess.PIPE, shell=True)
-	cmd_output, err = p.communicate()
+    p=subprocess.Popen(cmd,stdout=subprocess.PIPE, shell=True)
+    cmd_output, err = p.communicate()
 
-	try:
-		cmd_output = demjson.decode(cmd_output)
-	except demjson.JSONDecodeError, e:
-		raise demjson.JSONDecodeError, e
+    try:
+        cmd_output = demjson.decode(cmd_output)
+    except demjson.JSONDecodeError, e:
+        raise demjson.JSONDecodeError, e
 
-	print "-- cmd_output --"
-	print cmd_output
-	legend = cmd_output.get('meta').get('legend')
-	start_check = cmd_output['meta']['start']
-	end_check = start_check+300
-	start_check = datetime.fromtimestamp(start_check)
-	end_check = datetime.fromtimestamp(end_check)
-	local_timestamp = pivot_timestamp(start_check)
-	data_series.update({
-		"site": site,
-		"legend": legend,
-		"data" :cmd_output['data'],
-		"start_time": start_check,
-		"end_time": end_check,
-		"check_time": start_check,
-		"local_timestamp": local_timestamp
-	})
-	return data_series
+    print "-- cmd_output --"
+    print cmd_output
+    legend = cmd_output.get('meta').get('legend')
+    start_check = cmd_output['meta']['start']
+    end_check = start_check+300
+    start_check = datetime.fromtimestamp(start_check)
+    end_check = datetime.fromtimestamp(end_check)
+    local_timestamp = pivot_timestamp(start_check)
+    data_series.update({
+        "site": site,
+        "legend": legend,
+        "data" :cmd_output['data'],
+        "start_time": start_check,
+        "end_time": end_check,
+        "check_time": start_check,
+        "local_timestamp": local_timestamp
+    })
+    return data_series
+
 
 def get_threshold(perf_data):
-	threshold_values = {}
+    threshold_values = {}
 
-	if len(perf_data) == 1:
-		return threshold_values
+    if len(perf_data) == 1:
+        return threshold_values
 
-	for param in perf_data.split(" "):
-		if ';' in param.split("=")[1]:
-			threshold_values[param.split("=")[0]] = {
-				"war": param.split("=")[1].split(";")[1],
-				"cric": param.split("=")[1].split(";")[2],
-				"cur": param.split("=")[1].split(";")[0]
-			}
-		else:
-			threshold_values[param.split("=")[0]] = {
-				"war": None,
-				"cric": None,
-				"cur": param.split("=")[1].strip("\n")
-			}
-	print "-- threshold_values --"
-	print threshold_values
-	return threshold_values
+    for param in perf_data.split(" "):
+        if ';' in param.split("=")[1]:
+            threshold_values[param.split("=")[0]] = {
+                "war": re.sub('[ms]', '', param.split("=")[1].split(";")[1]),
+                "cric": re.sub('[ms]', '', param.split("=")[1].split(";")[2]),
+                "cur": re.sub('[ms]', '', param.split("=")[1].split(";")[0])
+            }
+        else:
+            threshold_values[param.split("=")[0]] = {
+                "war": None,
+                "cric": None,
+                "cur": re.sub('[ms]', '', param.split("=")[1].strip("\n"))
+            }
+    print "-- threshold_values --"
+    print threshold_values
+    return threshold_values
+
 
 def pivot_timestamp(timestamp):
-	t_stmp = timestamp + timedelta(minutes=-(timestamp.minute % 5))
+    t_stmp = timestamp + timedelta(minutes=-(timestamp.minute % 5))
 
-	return t_stmp
+    return t_stmp
+
 
 def db_port(site_name=None):
-	port = None
-	if site_name:
-		site = site_name
-	else:
-		file_path = os.path.dirname(os.path.abspath(__file__))
-		path = [path for path in file_path.split('/')]
+    port = None
+    if site_name:
+        site = site_name
+    else:
+        file_path = os.path.dirname(os.path.abspath(__file__))
+        path = [path for path in file_path.split('/')]
 
-		if len(path) <= 4 or 'sites' not in path:
-			raise Exception, "Place the file in appropriate omd site"
-		else:
-			site = path[path.index('sites') + 1]
-	
-	port_conf_file = '/opt/omd/sites/%s/etc/mongodb/mongod.d/port.conf' % site
-	try:
-		with open(port_conf_file, 'r') as portfile:
-			port = portfile.readline().split('=')[1].strip()
-	except IOError, e:
-		raise IOError, e
+        if len(path) <= 4 or 'sites' not in path:
+            raise Exception, "Place the file in appropriate omd site"
+        else:
+            site = path[path.index('sites') + 1]
+    
+    port_conf_file = '/opt/omd/sites/%s/etc/mongodb/mongod.d/port.conf' % site
+    try:
+        with open(port_conf_file, 'r') as portfile:
+            port = portfile.readline().split('=')[1].strip()
+    except IOError, e:
+        raise IOError, e
 
-	return port
+    return port
+
 
 def mongo_conn(**kwargs):
-	"""
-	Mongodb connection object
-	"""
-	DB = None
-	try:
-		CONN = pymongo.Connection(
-			host=kwargs.get('host'),
-			port=kwargs.get('port')
-		)
-		DB = CONN[kwargs.get('db_name')]
-	except pymongo.errors.PyMongoError, e:
-		raise pymongo.errors.PyMongoError, e
-	return DB
+    """
+    Mongodb connection object
+    """
+    DB = None
+    try:
+        CONN = pymongo.Connection(
+            host=kwargs.get('host'),
+            port=kwargs.get('port')
+        )
+        DB = CONN[kwargs.get('db_name')]
+    except pymongo.errors.PyMongoError, e:
+        raise pymongo.errors.PyMongoError, e
+    return DB
+
 
 def insert_data(data_dict):
-	port = None
-	db	= None
-	#Get the port for mongodb process, specific to this multisite instance
-	port = db_port()
+    port = None
+    db  = None
+    #Get the port for mongodb process, specific to this multisite instance
+    port = db_port()
 
-	#Get the mongodb connection object
-	db = mongo_conn(
-		host='localhost',
-		port=int(port),
-		db_name='nocout'
-	)
+    #Get the mongodb connection object
+    db = mongo_conn(
+        host='localhost',
+        port=int(port),
+        db_name='nocout'
+    )
 
-	if db:
-		db.device_perf.insert(data_dict)
-		return "Data Inserted into Mongodb " 
-	else:
-		return "Data couldn't be inserted into Mongodb"
+    if db:
+        print "-- db port --"
+        print int(port)
+        db.device_perf.insert(data_dict)
+        return "Data Inserted into Mongodb"
+    else:
+        return "Data couldn't be inserted into Mongodb"
+
 
 def rrd_migration_main(site,host,services):
 	for service in services[0]:
 		build_export(site,host,service)
+        
 
 """if __name__ == '__main__':
-	build_export('BT','AM-400','PING')
+    build_export('BT','AM-400','PING')
 """
 
