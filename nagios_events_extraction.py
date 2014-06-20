@@ -5,7 +5,7 @@ import rrd_migration,rrd_main,mysql_functions,mongo_functions
 
 def extract_nagios_events_live():
 	db = None
-        file_path = os.path.dirname(os.path.abspath(__file__))
+	file_path = os.path.dirname(os.path.abspath(__file__))
         path = [path for path in file_path.split('/')]
 
         if 'sites' not in path:
@@ -94,7 +94,7 @@ def extract_nagios_events_live():
                                                         state_type=log_split[2],discription=log_split[10],
                                                         ip_address=host_ip,event_type_name=log_split[0])
                         #print host_event_dict
-                        mongo_functions.mongo_db_insert(db,host_event_dict,"host_event")
+                        mongo_functions.mongo_db_insert(db,host_event_dict,"notification_event")
 
 		elif log_split[0] == "SERVICE NOTIFICATION":
 
@@ -106,7 +106,7 @@ def extract_nagios_events_live():
                                                         state_type=log_split[2],discription=log_split[11],
                                                         ip_address=host_ip,event_type_name=log_split[0],event_name=log_split[5])
                         #print serv_event_dict
-                        mongo_functions.mongo_db_insert(db,serv_event_dict,"serv_event")
+                        mongo_functions.mongo_db_insert(db,serv_event_dict,"notification_event")
 	
 		
 if __name__ == '__main__':
